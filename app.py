@@ -621,23 +621,24 @@ with aba_historico:
 
 
 
-    with st.expander("🔒 Acesso administrativo", expanded=False):
-        st.warning("⚠️ Esta ação apagará TODOS os dados do banco. Operação irreversível.")
-        senha_digitada = st.text_input("Digite a senha de administrador para continuar", type="password")
-        senha_correta = os.getenv("SENHA_ADMIN")
-        if senha_digitada:
-            if senha_digitada == senha_correta:
-                if st.button("🧹 Apagar histórico de produtos e arquivos"):
-                    resetar_banco()
+    if st.session_state.usuario == "admin":
+        with st.expander("🔒 Acesso administrativo", expanded=False):
+            st.warning("⚠️ Esta ação apagará TODOS os dados do banco. Operação irreversível.")
+            senha_digitada = st.text_input("Digite a senha de administrador para continuar", type="password")
+            senha_correta = os.getenv("SENHA_ADMIN")
+            if senha_digitada:
+                if senha_digitada == senha_correta:
+                    if st.button("🧹 Apagar histórico de produtos e arquivos"):
+                        resetar_banco()
 
-                    # 🗑️ Deleta os arquivos da pasta do usuário logado
-                    pasta_base = os.path.join("documentos_armazenados", st.session_state.cnpj)
-                    if os.path.exists(pasta_base):
-                        import shutil
-                        shutil.rmtree(pasta_base)
+                        # 🗑️ Deleta os arquivos da pasta do usuário logado
+                        pasta_base = os.path.join("documentos_armazenados", st.session_state.cnpj)
+                        if os.path.exists(pasta_base):
+                            import shutil
+                            shutil.rmtree(pasta_base)
 
-                    st.success("✅ Histórico e arquivos apagados com sucesso.")
-                    st.rerun()
+                        st.success("✅ Histórico e arquivos apagados com sucesso.")
+                        st.rerun()
 
-            else:
-                st.error("❌ Senha incorreta.")
+                else:
+                    st.error("❌ Senha incorreta.")
