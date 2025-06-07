@@ -286,20 +286,19 @@ if arquivos and not st.session_state.get("arquivos_processados", False):
             )
 
             if arq.name.lower().endswith(".xml"):
-                    try:
-                        arq.seek(0)
-                        produtos = parse_nfe(arq)
-                        for p in produtos:
-                            p.update({
-                                "Empresa": "Desconhecida",  # Se tiver como extrair, melhor ainda
-                                "CNPJ": st.session_state.cnpj,
-                                "Data": datetime.date.today().strftime("%Y-%m-%d"),
-                                "Origem": "XML"
-                            })
-                            inserir_produto(p)
-                    except Exception as e:
-                        st.error(f"❌ Erro ao processar XML {arq.name}: {e}")
-
+                try:
+                    arq.seek(0)
+                    produtos = parse_nfe(arq)
+                    for p in produtos:
+                        p.update({
+                            "Empresa": "Desconhecida",  # Pode tentar extrair também, se quiser
+                            "CNPJ": st.session_state.cnpj,
+                            "Data": datetime.date.today().strftime("%Y-%m-%d"),
+                            "Origem": "XML"
+                        })
+                        inserir_produto(p)
+                except Exception as e:
+                    st.error(f"❌ Erro ao processar XML {arq.name}: {e}")
 
             elif arq.name.lower().endswith(".pdf"):
                 try:
@@ -314,13 +313,14 @@ if arquivos and not st.session_state.get("arquivos_processados", False):
                     for p in produtos:
                         p.update({
                             "Empresa": empresa or "Desconhecida",
-                            "CNPJ": st.session_state.cnpj,
+                            "CNPJ": st.session_state.cnpj,  # <- Aqui foi ajustado
                             "Data": data_str,
                             "Origem": "PDF"
                         })
                         inserir_produto(p)
                 except Exception as e:
                     st.error(f"Erro ao processar PDF {arq.name}: {e}")
+
 
 
 
@@ -448,11 +448,13 @@ with aba_historico:
 
             if not df_filtrado.empty:
                 # Conversão para cálculo (mantém como float)
+              # Garantir tipo numérico real ANTES de tudo
                 df_filtrado["Valor Total"] = pd.to_numeric(df_filtrado["Valor Total"], errors="coerce").fillna(0)
                 df_filtrado["Valor Unitário"] = pd.to_numeric(df_filtrado["Valor Unitário"], errors="coerce").fillna(0)
 
-                # Calcula total antes de formatar
+                # Só depois você calcula
                 total_filtrado = df_filtrado["Valor Total"].sum()
+
 
                 # Filtros por empresa e produto
                 filtros_empresas = st.multiselect(
