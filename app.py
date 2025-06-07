@@ -418,7 +418,7 @@ with aba_envio:
 
 with aba_historico:
     with st.expander("📂 Histórico de produtos extraídos", expanded=True):
-        registros = buscar_todos()
+        registros = buscar_todos(st.session_state.cnpj)
 
         if registros:
             df_hist = pd.DataFrame(registros, columns=[
