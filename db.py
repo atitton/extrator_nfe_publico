@@ -48,13 +48,17 @@ def inserir_produto(dados):
 
 
 
-def buscar_todos():
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM produtos")
-    dados = cursor.fetchall()
+def buscar_todos(cnpj=None):
+    conn = sqlite3.connect("banco.db")
+    c = conn.cursor()
+    if cnpj:
+        c.execute("SELECT * FROM produtos WHERE CNPJ = ?", (cnpj,))
+    else:
+        c.execute("SELECT * FROM produtos")
+    dados = c.fetchall()
     conn.close()
     return dados
+
 
 def resetar_banco():
     conn = conectar()
