@@ -286,19 +286,26 @@ if arquivos and not st.session_state.get("arquivos_processados", False):
             )
 
             if arq.name.lower().endswith(".xml"):
-                try:
-                    arq.seek(0)
-                    produtos = parse_nfe(arq)
-                    for p in produtos:
-                        inserir_produto(p)
-                except Exception as e:
-                    st.error(f"❌ Erro ao processar XML {arq.name}: {e}")
+                    try:
+                        arq.seek(0)
+                        produtos = parse_nfe(arq)
+                        for p in produtos:
+                            p.update({
+                                "Empresa": "Desconhecida",  # Se tiver como extrair, melhor ainda
+                                "CNPJ": st.session_state.cnpj,
+                                "Data": datetime.date.today().strftime("%Y-%m-%d"),
+                                "Origem": "XML"
+                            })
+                            inserir_produto(p)
+                    except Exception as e:
+                        st.error(f"❌ Erro ao processar XML {arq.name}: {e}")
+
 
             elif arq.name.lower().endswith(".pdf"):
                 try:
                     texto = extrair_texto_pdf(arq)
                     produtos = extrair_produtos_pdf_livre(texto)
-                    empresa, cnpj_lido, data = extrair_dados_cabecalho(texto)
+                    empresa, _, data = extrair_dados_cabecalho(texto)
 
                     if not isinstance(data, datetime.date):
                         data = datetime.date.today()
@@ -307,14 +314,14 @@ if arquivos and not st.session_state.get("arquivos_processados", False):
                     for p in produtos:
                         p.update({
                             "Empresa": empresa or "Desconhecida",
-                            "CNPJ": cnpj_lido or "00000000000000",
+                            "CNPJ": st.session_state.cnpj,
                             "Data": data_str,
                             "Origem": "PDF"
-
                         })
                         inserir_produto(p)
                 except Exception as e:
                     st.error(f"Erro ao processar PDF {arq.name}: {e}")
+
 
 
     st.success(f"✅ {len(arquivos)} df_filtradoquivo(s) armazenado(s) com sucesso!")
