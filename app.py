@@ -661,7 +661,11 @@ with aba_historico:
 
                 # 📈 Evolução dos gastos
                 df_filtrado["Valor Total"] = pd.to_numeric(df_filtrado["Valor Total"], errors="coerce")
+                df_filtrado["Data"] = pd.to_datetime(df_filtrado["Data"]).dt.date  # <-- converte para apenas a data (sem hora)
+                df_filtrado["Data"] = pd.to_datetime(df_filtrado["Data"]).dt.date  # <-- aplica só a data
                 df_por_dia = df_filtrado.groupby("Data")["Valor Total"].sum().reset_index()
+
+
                 fig_linha = go.Figure()
                 fig_linha.add_trace(go.Scatter(
                     x=df_por_dia["Data"],
