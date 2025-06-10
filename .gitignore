@@ -1,0 +1,20 @@
+# Ignorar arquivos temporários e de execução
+__pycache__/
+*.pyc
+*.pyo
+
+# Banco de dados local
+banco.db
+
+# Arquivos gerados por relatórios
+*.xlsx
+*.pdf
+
+# Documentos armazenados por upload
+documentos_armazenados/
+
+# Dados de sessão
+sessao.json
+
+# Pasta de logos dos usuários
+logos/
