@@ -62,11 +62,39 @@ def buscar_todos(cnpj=None):
     return dados
 
 
-
 def resetar_banco():
     conn = conectar()
     cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS produtos")
+    try:
+        cursor.execute("DROP TABLE IF EXISTS produtos")
+        criar_tabela() # Recria a tabela após apagar
+        conn.commit()
+        print("✅ Banco de dados resetado com sucesso.")
+    except Exception as e:
+        print(f"Erro ao resetar o banco de dados: {e}")
+    finally:
+        conn.close()
+
+
+
+def apagar_produtos_por_cnpj(cnpj):
+    conn = conectar()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM produtos WHERE CNPJ = ?", (cnpj,))
+        conn.commit()
+        print(f"✅ Produtos do CNPJ {cnpj} apagados com sucesso.")
+    except Exception as e:
+        print(f"Erro ao apagar produtos do CNPJ {cnpj}: {e}")
+    finally:
+        conn.close()
+        
+def excluir_produtos_por_data(cnpj, data_ini, data_fim):
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("""
+        DELETE FROM produtos
+        WHERE CNPJ = ? AND date(Data) BETWEEN ? AND ?
+    """, (cnpj, data_ini.isoformat(), data_fim.isoformat()))
     conn.commit()
     conn.close()
-    criar_tabela()
