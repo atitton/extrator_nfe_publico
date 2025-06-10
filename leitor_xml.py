@@ -3,39 +3,49 @@ import xml.etree.ElementTree as ET
 def parse_nfe(xml_file):
     xml_file.seek(0)
     tree = ET.parse(xml_file)
+    root = tree.getroot()
 
-    ns = {"nfe": "http://www.portalfiscal.inf.br/nfe"}  # ✅ Definido ANTES de usar
+    # Namespace direto (sem prefixo nfe:)
+    ns = {"ns": "http://www.portalfiscal.inf.br/nfe"}
 
-    root = tree.getroot().find(".//nfe:NFe", ns)
+    # Pega o nó infNFe corretamente
+    infNFe = root.find(".//ns:infNFe", ns)
+    if infNFe is None:
+        return []
 
-    ns = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
+    # Extrai emitente
+    emit = infNFe.find("ns:emit", ns)
+    emitente = emit.find("ns:xNome", ns).text.strip() if emit is not None else "Desconhecida"
+    cnpj = emit.find("ns:CNPJ", ns).text.strip() if emit is not None else ""
 
-    emitente = root.find(".//nfe:emit/nfe:xNome", ns)
-    emitente = emitente.text if emitente is not None else ""
-
-    cnpj = root.findtext(".//nfe:emit/nfe:CNPJ", default="", namespaces=ns)
-    data_emissao = root.findtext(".//nfe:ide/nfe:dhEmi", default="", namespaces=ns)
+    # Data de emissão
+    data_emissao = infNFe.findtext("ns:ide/ns:dhEmi", default="", namespaces=ns)
 
     produtos = []
-    for det in root.findall(".//nfe:det", ns):
-        nome = det.findtext("nfe:prod/nfe:xProd", default="", namespaces=ns)
+    for det in infNFe.findall("ns:det", ns):
+        nome = det.findtext("ns:prod/ns:xProd", default="", namespaces=ns)
+        qtd_str = det.findtext("ns:prod/ns:qCom", default="0", namespaces=ns)
+        valor_unit_str = det.findtext("ns:prod/ns:vUnCom", default="0", namespaces=ns)
+        valor_total_str = det.findtext("ns:prod/ns:vProd", default="0", namespaces=ns)
+
         try:
-            qtd = float(det.findtext("nfe:prod/nfe:qCom", default="0", namespaces=ns).replace(",", "."))
-            valor_unit = float(det.findtext("nfe:prod/nfe:vUnCom", default="0", namespaces=ns).replace(",", "."))
-            valor_total = float(det.findtext("nfe:prod/nfe:vProd", default="0", namespaces=ns).replace(",", "."))
-        except:
+            qtd = float(qtd_str.replace(",", "."))
+            valor_unit = float(valor_unit_str.replace(",", "."))
+            valor_total = float(valor_total_str.replace(",", "."))
+        except Exception as e:
+            print(f"[ERRO] Produto '{nome}' inválido: {e}")
             continue
 
-        if nome:
-            produtos.append({
-                "Produto": nome,
-                "Quantidade": qtd,
-                "Valor Unitário": valor_unit,
-                "Valor Total": valor_total,
-                "CNPJ": cnpj,
-                "Empresa": emitente,
-                "Data": data_emissao,
-                "Origem": "XML"
-            })
+        produtos.append({
+            "Produto": nome,
+            "Quantidade": qtd,
+            "Valor Unitário": valor_unit,
+            "Valor Total": valor_total,
+            "CNPJ": cnpj,
+            "Empresa": emitente,
+            "Data": data_emissao,
+            "Origem": "XML"
+        })
 
     return produtos
+

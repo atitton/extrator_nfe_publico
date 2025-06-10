@@ -1,3 +1,4 @@
+# app.py
 from io import BytesIO
 import streamlit as st
 import pandas as pd
@@ -11,7 +12,10 @@ import plotly.express as px
 import calplot
 import fitz
 import plotly.graph_objects as go
+import shutil # Importar shutil para apagar pastas (já importado no topo, não duplicar)
 
+
+from db import criar_tabela, inserir_produto, buscar_todos, resetar_banco, apagar_produtos_por_cnpj # Adicionado apagar_produtos_por_cnpj
 from armazenamento import verificar_arquivo_existente, salvar_arquivo_em_nuvem
 from leitor_xml import parse_nfe
 from leitor_pdf_imagem import (
@@ -20,13 +24,33 @@ from leitor_pdf_imagem import (
     extrair_produtos_pdf_livre,
     extrair_dados_cabecalho
 )
-from db import criar_tabela, inserir_produto, buscar_todos, resetar_banco
 
 # Streamlit setup
 st.set_page_config(page_title="Extrator de Documentos", layout="wide")
 SESSION_FILE = "sessao.json"
 
 # Inicialização do banco de dados de usuários
+
+def limpar_df(df_raw):
+    df = df_raw.copy()
+
+    # Corrigir valores
+    for col in ["Valor Unitário", "Valor Total"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+
+    # Quantidade segura
+    df["Quantidade"] = pd.to_numeric(df["Quantidade"], errors="coerce").fillna(1)
+
+    # Corrigir datas
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+
+    # Preencher empresas faltando
+    df["Empresa"] = df["Empresa"].fillna("Desconhecida")
+
+    return df
+
+
 def init_usuarios():
     conn = sqlite3.connect("banco.db")
     c = conn.cursor()
@@ -202,12 +226,37 @@ if "usuario" not in st.session_state:
             else:
                 st.sidebar.error("Usuário ou senha incorretos.")
 
-if "usuario" in st.session_state:
+if "usuario" in st.session_state: # Este bloco é executado QUANDO O USUÁRIO ESTÁ LOGADO
+    st.sidebar.title("Menu") # Adicionei o título do menu
+    st.sidebar.write(f"Olá, **{st.session_state.usuario}**") # Mostra o usuário logado
+    st.sidebar.write(f"CNPJ: **{st.session_state.cnpj}**") # Mostra o CNPJ do usuário logado
+
+    # Botão de Logout na Sidebar
     if st.sidebar.button("🚪 Sair"):
         limpar_sessao()
         del st.session_state.usuario
-        del st.session_state.cnpj
+        if 'cnpj' in st.session_state: # Verifica se cnpj existe antes de deletar
+            del st.session_state.cnpj
         st.rerun()
+
+    # NOVO BLOCO: Adicionando a opção de excluir dados na barra lateral para o USUÁRIO COMUM
+    with st.sidebar.expander("🗑️ Gerenciar Meus Dados"):
+        st.warning("⚠️ Esta ação apagará TODOS os dados de produtos associados ao SEU CNPJ. Operação irreversível.")
+
+        if st.button("❌ Apagar Meus Dados de Produtos", key="delete_user_data_sidebar"):
+            if st.session_state.get('cnpj'):
+                # 1. Apagar do banco de dados (APENAS os do CNPJ logado)
+                apagar_produtos_por_cnpj(st.session_state.cnpj) # <-- Chamando a nova função
+
+                # 2. Apagar os arquivos físicos do usuário
+                pasta_base = os.path.join("documentos_armazenados", st.session_state.cnpj)
+                if os.path.exists(pasta_base):
+                    shutil.rmtree(pasta_base) # Apaga APENAS a pasta do usuário logado
+
+                st.success("✅ Seus dados e arquivos foram apagados com sucesso.")
+                st.rerun() # Recarrega a página para refletir as mudanças
+            else:
+                st.error("Por favor, faça login para apagar seus dados.")
 
 if "usuario" not in st.session_state:
     st.stop()
@@ -276,12 +325,12 @@ if arquivos and not st.session_state.get("arquivos_processados", False):
             progress_bar.progress(progresso, text=f"📄 Processando {i+1}/{total}: {arq.name}")
 
             nome_arquivo = arq.name
-            cnpj = st.session_state.cnpj
+            cnpj_usuario_logado = st.session_state.cnpj # Renomeado para clareza
 
             salvar_arquivo_em_nuvem(
                 arquivo=arq,
                 nome_arquivo=arq.name,
-                cnpj=cnpj,
+                cnpj=cnpj_usuario_logado, # Usar o CNPJ do usuário logado para salvar o arquivo
                 data_str=datetime.date.today()
             )
 
@@ -289,51 +338,70 @@ if arquivos and not st.session_state.get("arquivos_processados", False):
                 try:
                     arq.seek(0)
                     produtos = parse_nfe(arq)
+                    produtos = parse_nfe(arq)
                     for p in produtos:
+                        # Só completa campos se estiverem faltando
                         p.update({
-                            "Empresa": "Desconhecida",  # Pode tentar extrair também, se quiser
+                            "Empresa": p.get("Empresa", "Desconhecida"),
                             "CNPJ": st.session_state.cnpj,
-                            "Data": datetime.date.today().strftime("%Y-%m-%d"),
+                            "Data": p.get("Data", datetime.date.today().strftime("%Y-%m-%d")),
                             "Origem": "XML"
                         })
                         inserir_produto(p)
+
                 except Exception as e:
                     st.error(f"❌ Erro ao processar XML {arq.name}: {e}")
 
+
             elif arq.name.lower().endswith(".pdf"):
+                st.info("Processando PDF... Isso pode levar um tempo.")
                 try:
+                    arq.seek(0) # Voltar o ponteiro do arquivo para o início
                     texto = extrair_texto_pdf(arq)
                     produtos = extrair_produtos_pdf_livre(texto)
-                    empresa, _, data = extrair_dados_cabecalho(texto)
+                    
+                    # DEBUG: Mostrar texto extraído do PDF
+                    # st.text_area("Conteúdo lido do PDF (para depuração):", texto, height=200, key=f"pdf_text_{arq.name}")
+                    
+                    empresa_pdf, cnpj_extraido_pdf, data_pdf = extrair_dados_cabecalho(texto)
 
-                    if not isinstance(data, datetime.date):
-                        data = datetime.date.today()
-                    data_str = data.strftime("%Y-%m-%d")
+                    # DEBUG: Mostrar dados extraídos do cabeçalho
+                    # st.write(f"DEBUG APP.PY: Empresa extraída de PDF: '{empresa_pdf}'")
+                    # st.write(f"DEBUG APP.PY: CNPJ extraído de PDF: '{cnpj_extraido_pdf}'")
+                    # st.write(f"DEBUG APP.PY: Data extraída de PDF: '{data_pdf}'")
+                    
+                    data_str = data_pdf if data_pdf else datetime.datetime.now().strftime("%Y-%m-%d")
 
-                    for p in produtos:
-                        p.update({
-                            "Empresa": empresa or "Desconhecida",
-                            "CNPJ": st.session_state.cnpj,  # <- Aqui foi ajustado
-                            "Data": data_str,
-                            "Origem": "PDF"
-                        })
-                        inserir_produto(p)
+                    if not produtos:
+                        st.warning("⚠️ Não foi possível extrair produtos do PDF. Verifique o formato ou tente outra fonte.")
+                    else:
+                        for p in produtos:
+                            p.update({
+                                "Empresa": empresa_pdf or "Desconhecida",
+                                # MUDANÇA IMPORTANTE: Use o CNPJ extraído do PDF.
+                                # Se ele estiver vazio, aí sim, use o CNPJ do usuário logado.
+                                "CNPJ": cnpj_extraido_pdf if cnpj_extraido_pdf else cnpj_usuario_logado, 
+                                "Data": data_str,
+                                "Origem": "PDF"
+                            })
+                            inserir_produto(p)
+                        st.success("✅ Produtos extraídos e salvos do PDF com sucesso!")
+                        # st.rerun() # Não é necessário recarregar a cada arquivo, apenas no final
                 except Exception as e:
-                    st.error(f"Erro ao processar PDF {arq.name}: {e}")
+                    st.error(f"Erro ao processar PDF: {e}")
+                    st.exception(e) # Para ver o erro completo
+        st.session_state.arquivos_processados = True
+        st.success(f"✅ {len(arquivos)} arquivo(s) armazenado(s) e processado(s) com sucesso!")
+
+        if st.button("🔄 Atualizar página"):
+            st.rerun()
 
 
-
-
-    st.success(f"✅ {len(arquivos)} df_filtradoquivo(s) armazenado(s) com sucesso!")
-    if st.button("Voltar"):
-        st.query_params.clear()
-        st.rerun()
-    
-               
-        
 aba_historico, aba_envio = st.tabs(["📊 Histórico de Produtos", "📤 Meus Arquivos"])
 
+# Bloco "Excluir por período" (removida a chamada a excluir_produtos_por_data)
 with st.expander("🧹 Excluir por período", expanded=False):
+    st.warning("⚠️ Esta ação apagará APENAS os arquivos físicos do seu CNPJ neste período. Os dados do histórico devem ser apagados na aba 'Gerenciar Meus Dados'.")
     data_ini = st.date_input("📆 De:", value=datetime.date.today() - datetime.timedelta(days=30), key="excl_ini")
     data_fim = st.date_input("📆 Até:", value=datetime.date.today(), key="excl_fim")
 
@@ -352,8 +420,8 @@ with st.expander("🧹 Excluir por período", expanded=False):
                         pasta_ano = os.path.join(base_path, ano)
                         for mes in os.listdir(pasta_ano):
                             pasta_mes = os.path.join(pasta_ano, mes)
-                            for nome_arquivo in os.listdir(pasta_mes):
-                                caminho = os.path.join(pasta_mes, nome_arquivo)
+                            for nome_arquivo_arq in os.listdir(pasta_mes): # Renomeado para evitar conflito
+                                caminho = os.path.join(pasta_mes, nome_arquivo_arq)
                                 data_arquivo = datetime.datetime.fromtimestamp(os.path.getmtime(caminho)).date()
                                 if data_ini <= data_arquivo <= data_fim:
                                     os.remove(caminho)
@@ -362,7 +430,7 @@ with st.expander("🧹 Excluir por período", expanded=False):
                     st.session_state.pop("confirmar_exclusao_periodo")
                     st.rerun()
                 else:
-                    st.warning("Nenhum arquivo encontrado.")
+                    st.warning("Nenhum arquivo encontrado para este CNPJ.")
         with col2:
             if st.button("❌ Cancelar exclusão", key="cancela_excluir_periodo"):
                 st.session_state.pop("confirmar_exclusao_periodo")
@@ -370,13 +438,13 @@ with st.expander("🧹 Excluir por período", expanded=False):
 
 with aba_envio:
     st.markdown("## 📁 Meus Arquivos Enviados")
-    cnpj = st.session_state.cnpj
-    pasta_base = os.path.join("documentos_armazenados", cnpj)
+    cnpj_do_usuario_logado = st.session_state.cnpj # Renomeado para clareza
+    pasta_base_usuario = os.path.join("documentos_armazenados", cnpj_do_usuario_logado)
 
-    if os.path.exists(pasta_base):
-        for ano in sorted(os.listdir(pasta_base)):
+    if os.path.exists(pasta_base_usuario):
+        for ano in sorted(os.listdir(pasta_base_usuario)):
             st.markdown(f"### 📅 Ano {ano}")
-            pasta_ano = os.path.join(pasta_base, ano)
+            pasta_ano = os.path.join(pasta_base_usuario, ano)
             for mes in sorted(os.listdir(pasta_ano)):
                 col_mes, col_botao_mes = st.columns([6, 1])
                 with col_mes:
@@ -390,7 +458,6 @@ with aba_envio:
                     col_ok, col_cancel = st.columns(2)
                     with col_ok:
                         if st.button("✅ Sim, excluir", key=f"sim_{ano}_{mes}"):
-                            import shutil
                             shutil.rmtree(os.path.join(pasta_ano, mes))
                             st.success(f"Mês {mes}/{ano} excluído com sucesso.")
                             st.session_state.pop(chave_conf)
@@ -401,22 +468,22 @@ with aba_envio:
 
 
                 pasta_mes = os.path.join(pasta_ano, mes)
-                arquivos = os.listdir(pasta_mes)
-                for arquivo in arquivos:
-                    caminho_arquivo = os.path.join(pasta_mes, arquivo)
+                arquivos_no_mes = os.listdir(pasta_mes) # Renomeado para evitar conflito
+                for arquivo_item in arquivos_no_mes: # Renomeado para evitar conflito
+                    caminho_arquivo = os.path.join(pasta_mes, arquivo_item)
                     col1, col2 = st.columns([6, 1])
                     with col1:
                         with open(caminho_arquivo, "rb") as f:
                             st.download_button(
-                                label=f"📄 {arquivo}",
+                                label=f"📄 {arquivo_item}",
                                 data=f.read(),
-                                file_name=arquivo,
+                                file_name=arquivo_item,
                                 mime="application/octet-stream"
                             )
                     with col2:
-                        if st.button("🗑️", key=f"del_{ano}_{mes}_{arquivo}"):
+                        if st.button("🗑️", key=f"del_{ano}_{mes}_{arquivo_item}"):
                             os.remove(caminho_arquivo)
-                            st.success(f"Arquivo {arquivo} excluído com sucesso.")
+                            st.success(f"Arquivo {arquivo_item} excluído com sucesso.")
                             st.rerun()
     else:
         st.info("Nenhum arquivo enviado ainda.")
@@ -426,11 +493,22 @@ with aba_envio:
 with aba_historico:
     with st.expander("📂 Histórico de produtos extraídos", expanded=True):
         registros = buscar_todos(st.session_state.cnpj)
-
+        
         if registros:
             df_hist = pd.DataFrame(registros, columns=[
                 "Empresa", "CNPJ", "Produto", "Quantidade", "Valor Unitário", "Valor Total", "Origem", "Data"
             ])
+            df_hist["Data"] = pd.to_datetime(df_hist["Data"], errors="coerce")
+            df_hist["Empresa"] = df_hist["Empresa"].astype(str).str.strip()
+            df_hist["Produto"] = df_hist["Produto"].astype(str).str.strip()
+
+          
+           
+            
+            
+            df_hist = limpar_df(df_hist)
+
+
 
             colf1, colf2 = st.columns(2)
             with colf1:
@@ -438,7 +516,7 @@ with aba_historico:
             with colf2:
                 data_fim = st.date_input("📆 Até:", value=datetime.date.today(), key="filtro_ate")
 
-            df_hist["Data"] = pd.to_datetime(df_hist["Data"].str[:10], errors="coerce").dt.tz_localize(None)
+            df_hist["Data"] = pd.to_datetime(df_hist["Data"], errors="coerce").dt.tz_localize(None)
 
             df_filtrado = df_hist[
                 df_hist["Data"].notna() &
@@ -486,7 +564,15 @@ with aba_historico:
                 col1.metric("📦 Total de Produtos", f"{len(df_filtrado):,}")
                 col2.metric("💰 Valor Total", f"R$ {total_filtrado:,.2f}")
                 try:
-                    top_empresa = df_filtrado.groupby("Empresa")["Valor Total"].sum().idxmax()
+                    top_empresa = (
+                        df_filtrado[df_filtrado["Empresa"] != "Desconhecida"]
+                        .groupby("Empresa")["Valor Total"]
+                        .sum()
+                        .idxmax()
+                        if not df_filtrado[df_filtrado["Empresa"] != "Desconhecida"].empty
+                        else "Desconhecida"
+)
+
                     col3.metric("🏆 Fornecedor Destaque", top_empresa)
                 except:
                     col3.metric("🏆 Fornecedor Destaque", "N/A")
@@ -522,15 +608,16 @@ with aba_historico:
                 )
 
                 # Agora sim: formatar para exibição (SEM quebrar nada)
-                df_filtrado["Valor Total"] = df_filtrado["Valor Total"].map(formatar_valor)
+                df_exibicao = df_filtrado.copy()
+                df_exibicao["Valor Total"] = df_exibicao["Valor Total"].map(formatar_valor)
+                df_exibicao["Valor Unitário"] = df_exibicao["Valor Unitário"].map(formatar_valor)
 
-                df_filtrado["Valor Unitário"] = df_filtrado["Valor Unitário"].map(formatar_valor)
 
 
 
                 st.markdown("### 📋 Produtos encontrados")
                 if 'df_filtrado' in locals() and not df_filtrado.empty:
-                    st.dataframe(df_filtrado, use_container_width=True, height=300)
+                    st.dataframe(df_exibicao, use_container_width=True, height=300)
                 else:
                     st.info("📭 Nenhum dado para exibir na tabela.")
 
@@ -616,38 +703,36 @@ with aba_historico:
         else:
             st.info("📭 Nenhum dado armazenado no banco ainda.")
 
-
-        
-
-        def limpar_coluna_valores(coluna):
-            return (
-                coluna.astype(str)
-                .str.replace(",", ".", regex=False)
-                .str.replace("R\\$", "", regex=True)
-                .str.extract(r'(\d+\.?\d*)')[0]
-                .astype(float)
-            )
+    # Remove a função interna, ela não é necessária aqui
+    # def limpar_coluna_valores(coluna):
+    #     return (
+    #         coluna.astype(str)
+    #         .str.replace(",", ".", regex=False)
+    #         .str.replace("R\\$", "", regex=True)
+    #         .str.extract(r'(\d+\.?\d*)')[0]
+    #         .astype(float)
+    #     )
 
 
 
-    if st.session_state.usuario == "admin":
-        with st.expander("🔒 Acesso administrativo", expanded=False):
-            st.warning("⚠️ Esta ação apagará TODOS os dados do banco. Operação irreversível.")
-            senha_digitada = st.text_input("Digite a senha de administrador para continuar", type="password")
-            senha_correta = os.getenv("SENHA_ADMIN")
-            if senha_digitada:
-                if senha_digitada == senha_correta:
-                    if st.button("🧹 Apagar histórico de produtos e arquivos"):
-                        resetar_banco()
-
-                        # 🗑️ Deleta os arquivos da pasta do usuário logado
-                        pasta_base = os.path.join("documentos_armazenados", st.session_state.cnpj)
-                        if os.path.exists(pasta_base):
-                            import shutil
-                            shutil.rmtree(pasta_base)
-
-                        st.success("✅ Histórico e arquivos apagados com sucesso.")
-                        st.rerun()
-
-                else:
-                    st.error("❌ Senha incorreta.")
+if st.session_state.usuario == "admin":
+    with st.expander("🔒 Acesso administrativo", expanded=False):
+        st.warning("⚠️ Esta ação apagará TODOS os dados do banco. Operação irreversível.")
+        # Adicionei 'key' para evitar DuplicateWidgetIDError
+        senha_digitada = st.text_input("Digite a senha de administrador para continuar", type="password", key="admin_password") 
+        senha_correta = os.getenv("SENHA_ADMIN")
+        if senha_digitada:
+            if senha_digitada == senha_correta:
+                # Alterado o texto do botão para deixar CLARO que é para o ADMIN e apaga TUDO
+                if st.button("🧹 Apagar TODOS os dados do sistema (ADMIN)", key="admin_delete_all"):
+                    resetar_banco() # Apaga TODOS os dados do banco
+                    
+                    # Apaga a pasta raiz de TODOS os documentos (para o admin)
+                    pasta_raiz_docs = "documentos_armazenados"
+                    if os.path.exists(pasta_raiz_docs):
+                        # Importante: shutil já está importado no topo, não precisa importar aqui de novo.
+                        shutil.rmtree(pasta_raiz_docs) # Isso apagaria TUDO
+                    st.success("✅ Histórico e arquivos (todos) apagados com sucesso pelo admin.")
+                    st.rerun()
+            else:
+                st.error("Senha de administrador incorreta.")
